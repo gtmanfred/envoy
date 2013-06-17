@@ -34,6 +34,8 @@
 #include <sys/wait.h>
 #include <systemd/sd-daemon.h>
 
+#include <poll.h>
+
 struct sock_info_t {
     char *ssh_auth_sock, *gpg_agent_info;
     int server_sock, ssh_auth_fd, gpg_agent_fd;
@@ -199,6 +201,51 @@ static void handle_ctrl_conn(int cfd)
         node->d.status = ENVOY_RUNNING;
 }
 
+static void bridge_sockets(int server, int client)
+{
+    while (true) {
+        char buf[BUFSIZ];
+        ssize_t bytes_r;
+        struct pollfd fds[2] = {
+            { .fd = client, .events = POLLOUT | POLLHUP },
+            { .fd = server, .events = POLLOUT | POLLHUP },
+        };
+
+        /* printf("- polling\n"); */
+        int ret = poll(fds, 2, -1);
+        if (ret < 0)
+            err(EXIT_FAILURE, "failed to poll");
+        else if (ret == 0)
+            break;
+
+        if (fds[0].revents & POLLHUP || fds[1].revents & POLLHUP) {
+            break;
+        }
+
+        if (fds[0].revents & POLLOUT) {
+            while ((bytes_r = read(fds[0].fd, buf, BUFSIZ)) > 0) {
+                printf("0: read %zd\n", bytes_r);
+                if (write(fds[1].fd, buf, bytes_r) < 0)
+                    err(EXIT_FAILURE, "failed to write to auth server");
+            }
+
+            if (bytes_r < 0 && errno != EAGAIN)
+                err(EXIT_FAILURE, "failed to read from auth client");
+        }
+
+        if (fds[1].revents & POLLOUT) {
+            while ((bytes_r = read(fds[1].fd, buf, BUFSIZ)) > 0) {
+                printf("1: read %zd\n", bytes_r);
+                if (write(fds[0].fd, buf, bytes_r) < 0)
+                    err(EXIT_FAILURE, "failed to write to auth client");
+            }
+
+            if (bytes_r < 0 && errno != EAGAIN)
+                err(EXIT_FAILURE, "failed to read from auth server");
+        }
+    }
+}
+
 static void handle_ssh_conn(int fd)
 {
     struct ucred cred;
@@ -209,7 +256,7 @@ static void handle_ssh_conn(int fd)
     static socklen_t sa_len = sizeof(struct sockaddr_un);
     static socklen_t cred_len = sizeof(struct ucred);
 
-    int cfd = accept4(fd, &sa.sa, &sa_len, SOCK_CLOEXEC);
+    int cfd = accept4(fd, &sa.sa, &sa_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if (cfd < 0)
         err(EXIT_FAILURE, "failed to accept connection");
 
@@ -230,17 +277,7 @@ static void handle_ssh_conn(int fd)
     if (connect(sshfd, &sa.sa, sa_len) < 0)
         err(EXIT_FAILURE, "failed to connect to agent");
 
-    /* FIXME: this is too one way atm */
-
-    char buf[BUFSIZ];
-    ssize_t bytes_r;
-    while ((bytes_r = read(cfd, buf, BUFSIZ)) < 0) {
-        write(sshfd, buf, bytes_r);
-    }
-
-    if (bytes_r < 0 && errno != EAGAIN)
-        err(EXIT_FAILURE, "failed to read from ssh child");
-
+    bridge_sockets(sshfd, cfd);
     close(sshfd);
     close(cfd);
 }
