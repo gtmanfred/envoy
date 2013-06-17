@@ -51,6 +51,12 @@ struct agent_data_t {
     char gpg[PATH_MAX];
 };
 
+struct agent_info_t {
+    uid_t uid;
+    struct agent_data_t d;
+    struct agent_info_t *next;
+};
+
 extern const struct agent_t Agent[LAST_AGENT];
 extern const char *envoy_sock;
 
