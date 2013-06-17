@@ -68,7 +68,7 @@ size_t init_socket(struct sockaddr_un *un, const char *socket);
 int create_socket(const char *path, mode_t mode);
 void shutdown_socket(int socket, const char *path);
 
-int connect_gpg_socket(const char *path);
+int connect_gpg_socket(const char *path, int mode);
 
 #endif
 

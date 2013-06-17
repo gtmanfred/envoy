@@ -127,7 +127,7 @@ static int gpg_update_tty(const char *sock)
 {
     char buf[BUFSIZ];
 
-    int fd = connect_gpg_socket(sock);
+    int fd = connect_gpg_socket(sock, 0);
     ssize_t nbytes = read(fd, buf, BUFSIZ);
     if (nbytes < 0)
         err(EXIT_FAILURE, "failed to read from gpg-agent socket");

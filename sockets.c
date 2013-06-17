@@ -89,7 +89,7 @@ int create_socket(const char *path, mode_t mode)
     return fd;
 }
 
-int connect_gpg_socket(const char *path)
+int connect_gpg_socket(const char *path, int mode)
 {
     union {
         struct sockaddr sa;
@@ -99,7 +99,7 @@ int connect_gpg_socket(const char *path)
     size_t len;
     socklen_t sa_len;
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | mode, 0);
     if (fd < 0) {
         warn("couldn't create socket");
         return -1;

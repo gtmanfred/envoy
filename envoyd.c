@@ -269,7 +269,7 @@ static void handle_ssh_conn(int fd)
         return;
     }
 
-    int sshfd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int sshfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (sshfd < 0)
         err(EXIT_FAILURE, "couldn't create socket");
 
@@ -279,6 +279,38 @@ static void handle_ssh_conn(int fd)
 
     bridge_sockets(sshfd, cfd);
     close(sshfd);
+    close(cfd);
+}
+
+static void handle_gpg_conn(int fd)
+{
+    struct ucred cred;
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    static socklen_t sa_len = sizeof(struct sockaddr_un);
+    static socklen_t cred_len = sizeof(struct ucred);
+
+    int cfd = accept4(fd, &sa.sa, &sa_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    if (cfd < 0)
+        err(EXIT_FAILURE, "failed to accept connection");
+
+    if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) < 0)
+        err(EXIT_FAILURE, "couldn't obtain credentials from unix domain socket");
+
+    struct agent_info_t *node = find_agent_info(agents, cred.uid);
+    if (!node) {
+        close(cfd);
+        return;
+    }
+
+    int gpgfd = connect_gpg_socket(node->d.gpg, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    if (gpgfd < 0)
+        err(EXIT_FAILURE, "couldn't create socket");
+
+    bridge_sockets(gpgfd, cfd);
+    close(gpgfd);
     close(cfd);
 }
 
@@ -307,6 +339,8 @@ static int loop(void)
                 close(fd);
             } else if (fd == s.ssh_auth_fd) {
                 handle_ssh_conn(fd);
+            } else if (fd == s.gpg_agent_fd) {
+                handle_gpg_conn(fd);
             } else if (fd == s.server_sock) {
                 accept_ctrl_conn();
             } else {
