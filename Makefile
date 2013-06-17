@@ -9,8 +9,8 @@ CFLAGS := -std=c99 \
 LDLIBS = -lsystemd-daemon
 
 all: envoyd envoy
-envoyd: envoyd.o common.o cgroups.o
-envoy: envoy.o common.o
+envoyd: envoyd.o sockets.o cgroups.o
+envoy: envoy.o sockets.o
 
 install: envoyd envoy
 	install -Dm755 envoyd ${DESTDIR}/usr/bin/envoyd
