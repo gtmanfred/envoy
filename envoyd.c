@@ -62,6 +62,17 @@ static void sighandler(int signum)
     }
 }
 
+static inline void epoll_register(int epoll_fd, int fd)
+{
+    struct epoll_event event = {
+        .data.fd = fd,
+        .events  = EPOLLIN | EPOLLET
+    };
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0)
+        err(EXIT_FAILURE, "failed to add socket to epoll");
+}
+
 static int create_socket(const char *path, mode_t mode)
 {
     int fd;
@@ -171,17 +182,10 @@ static void accept_ctrl_conn(void)
     struct agent_info_t *node = find_agent_info(agents, cred.uid);
 
     if (!node || node->d.pid == 0 || !monitor_pid_alive(node->d.pid, cred.uid)) {
-        struct epoll_event event = {
-            .data.fd = cfd,
-            .events  = EPOLLIN | EPOLLET
-        };
-
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cfd, &event) < 0)
-            err(EXIT_FAILURE, "failed to add socket to epoll");
-
         if (node)
             node->d.pid = 0;
 
+        epoll_register(epoll_fd, cfd);
         send_message(cfd, ENVOY_STOPPED, false);
     } else {
         send_agent(cfd, &node->d, true);
@@ -265,17 +269,6 @@ static void handle_ssh_conn(int fd)
 
     close(sshfd);
     close(cfd);
-}
-
-static inline void epoll_register(int epoll_fd, int fd)
-{
-    struct epoll_event event = {
-        .data.fd = fd,
-        .events  = EPOLLIN | EPOLLET
-    };
-
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0)
-        err(EXIT_FAILURE, "failed to add socket to epoll");
 }
 
 static int loop(void)
