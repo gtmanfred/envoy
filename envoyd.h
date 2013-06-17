@@ -15,8 +15,8 @@
  * Copyright (C) Simon Gomizelj, 2012
  */
 
-#ifndef COMMON_H
-#define COMMON_H
+#ifndef ENVOYD_H
+#define ENVOYD_H
 
 #include <limits.h>
 #include <sys/types.h>
