@@ -135,7 +135,7 @@ static void send_message(int fd, enum status status, bool close_sock)
     send_agent(fd, &d, close_sock);
 }
 
-static void accept_conn(void)
+static void accept_ctrl_conn(void)
 {
     struct ucred cred;
     union {
@@ -179,7 +179,7 @@ static void accept_conn(void)
     }
 }
 
-static void handle_conn(int cfd)
+static void handle_ctrl_conn(int cfd)
 {
     struct ucred cred;
     static socklen_t cred_len = sizeof(struct ucred);
@@ -234,12 +234,13 @@ static int loop(void)
         for (i = 0; i < n; ++i) {
             struct epoll_event *evt = &events[i];
 
-            if (evt->events & EPOLLERR || evt->events & EPOLLHUP)
+            if (evt->events & EPOLLERR || evt->events & EPOLLHUP) {
                 close(evt->data.fd);
-            else if (evt->data.fd == s.server_sock)
-                accept_conn();
-            else
-                handle_conn(evt->data.fd);
+            } else if (evt->data.fd == s.server_sock) {
+                accept_ctrl_conn();
+            } else {
+                handle_ctrl_conn(evt->data.fd);
+            }
 
             fflush(stdout);
         }
