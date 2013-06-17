@@ -35,7 +35,7 @@
 #include <systemd/sd-daemon.h>
 
 struct sock_info_t {
-    char* ssh_auth_sock, gpg_agent_info;
+    char *ssh_auth_sock, *gpg_agent_info;
     int server_sock, ssh_auth_fd, gpg_agent_fd;
 };
 
@@ -62,7 +62,7 @@ static void sighandler(int signum)
     }
 }
 
-static int create_socket(void)
+static int create_socket(const char *path, mode_t mode)
 {
     int fd;
     union {
@@ -75,13 +75,12 @@ static int create_socket(void)
     if (fd < 0)
         err(EXIT_FAILURE, "couldn't create socket");
 
-    const char *socket = env_envoy_socket();
-    sa_len = init_socket(&sa.un, socket);
+    sa_len = init_socket(&sa.un, path);
     if (bind(fd, &sa.sa, sa_len) < 0)
         err(EXIT_FAILURE, "failed to bind");
 
     if (sa.un.sun_path[0] != '@')
-        chmod(sa.un.sun_path, 0777);
+        chmod(sa.un.sun_path, mode);
 
     if (listen(fd, SOMAXCONN) < 0)
         err(EXIT_FAILURE, "failed to listen");
@@ -94,13 +93,23 @@ static void get_sockets(struct sock_info_t *s)
     int fd, n;
     const char *path;
 
+    /* FIXME: obviously shouldn't hardcoded */
+    mkdir("/run/user/1000/envoy", 0700);
+
     n = sd_listen_fds(0);
     switch (n) {
     case 0:
         path = env_envoy_socket();
-        s->server_sock = create_socket();
+        s->server_sock = create_socket(path, 0777);
+        /* fallthrough */
     case 1:
+        s->ssh_auth_sock = "/run/user/1000/envoy/ssh";
+        s->ssh_auth_fd = create_socket(s->ssh_auth_sock, 0777);
+        /* fallthrough */
     case 2:
+        s->gpg_agent_info = "/run/user/1000/envoy/gpg";
+        s->gpg_agent_fd = create_socket(s->gpg_agent_info, 0777);
+        /* fallthrough */
     case 3:
         sd_activated = true;
         fd = SD_LISTEN_FDS_START;
@@ -212,15 +221,70 @@ static void handle_ctrl_conn(int cfd)
         node->d.status = ENVOY_RUNNING;
 }
 
-static int loop(void)
+static void handle_ssh_conn(int fd)
 {
-    struct epoll_event events[4], event = {
-        .data.fd = s.server_sock,
+    struct ucred cred;
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    static socklen_t sa_len = sizeof(struct sockaddr_un);
+    static socklen_t cred_len = sizeof(struct ucred);
+
+    int cfd = accept4(fd, &sa.sa, &sa_len, SOCK_CLOEXEC);
+    if (cfd < 0)
+        err(EXIT_FAILURE, "failed to accept connection");
+
+    if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) < 0)
+        err(EXIT_FAILURE, "couldn't obtain credentials from unix domain socket");
+
+    struct agent_info_t *node = find_agent_info(agents, cred.uid);
+    if (!node) {
+        close(cfd);
+        return;
+    }
+
+    int sshfd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (sshfd < 0)
+        err(EXIT_FAILURE, "couldn't create socket");
+
+    sa_len = init_socket(&sa.un, node->d.sock);
+    if (connect(sshfd, &sa.sa, sa_len) < 0)
+        err(EXIT_FAILURE, "failed to connect to agent");
+
+    /* FIXME: this is too one way atm */
+
+    char buf[BUFSIZ];
+    ssize_t bytes_r;
+    while ((bytes_r = read(cfd, buf, BUFSIZ)) < 0) {
+        write(sshfd, buf, bytes_r);
+    }
+
+    if (bytes_r < 0 && errno != EAGAIN)
+        err(EXIT_FAILURE, "failed to read from ssh child");
+
+    close(sshfd);
+    close(cfd);
+}
+
+static inline void epoll_register(int epoll_fd, int fd)
+{
+    struct epoll_event event = {
+        .data.fd = fd,
         .events  = EPOLLIN | EPOLLET
     };
 
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, s.server_sock, &event) < 0)
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0)
         err(EXIT_FAILURE, "failed to add socket to epoll");
+}
+
+static int loop(void)
+{
+    struct epoll_event events[4];
+
+    epoll_register(epoll_fd, s.server_sock);
+    epoll_register(epoll_fd, s.ssh_auth_fd);
+    epoll_register(epoll_fd, s.gpg_agent_fd);
 
     while (true) {
         int i, n = epoll_wait(epoll_fd, events, 4, -1);
@@ -233,13 +297,16 @@ static int loop(void)
 
         for (i = 0; i < n; ++i) {
             struct epoll_event *evt = &events[i];
+            int fd = evt->data.fd;
 
             if (evt->events & EPOLLERR || evt->events & EPOLLHUP) {
-                close(evt->data.fd);
-            } else if (evt->data.fd == s.server_sock) {
+                close(fd);
+            } else if (fd == s.ssh_auth_fd) {
+                handle_ssh_conn(fd);
+            } else if (fd == s.server_sock) {
                 accept_ctrl_conn();
             } else {
-                handle_ctrl_conn(evt->data.fd);
+                handle_ctrl_conn(fd);
             }
 
             fflush(stdout);
