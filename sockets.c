@@ -22,6 +22,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <sys/stat.h>
+#include <err.h>
+
 const struct agent_t Agent[LAST_AGENT] = {
     [AGENT_SSH_AGENT] = {
         .name = "ssh-agent",
@@ -58,6 +61,32 @@ size_t init_socket(struct sockaddr_un *un, const char *socket)
     memcpy(&un->sun_path[off], &socket[off], len - off);
 
     return len + sizeof(un->sun_family);
+}
+
+int create_socket(const char *path, mode_t mode)
+{
+    int fd;
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    socklen_t sa_len;
+
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        err(EXIT_FAILURE, "couldn't create socket");
+
+    sa_len = init_socket(&sa.un, path);
+    if (bind(fd, &sa.sa, sa_len) < 0)
+        err(EXIT_FAILURE, "failed to bind");
+
+    if (sa.un.sun_path[0] != '@')
+        chmod(sa.un.sun_path, mode);
+
+    if (listen(fd, SOMAXCONN) < 0)
+        err(EXIT_FAILURE, "failed to listen");
+
+    return fd;
 }
 
 /* void shutdown_socket(int socket, const char *socket) */

@@ -62,10 +62,11 @@ extern const char *envoy_sock;
 
 const char *env_lookup(const char *env, const char *def);
 const char *env_envoy_socket(void);
+enum agent find_agent(const char *string);
 
 size_t init_socket(struct sockaddr_un *un, const char *socket);
+int create_socket(const char *path, mode_t mode);
 void shutdown_socket(int socket, const char *path);
-enum agent find_agent(const char *string);
 
 #endif
 

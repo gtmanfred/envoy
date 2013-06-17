@@ -73,32 +73,6 @@ static inline void epoll_register(int epoll_fd, int fd)
         err(EXIT_FAILURE, "failed to add socket to epoll");
 }
 
-static int create_socket(const char *path, mode_t mode)
-{
-    int fd;
-    union {
-        struct sockaddr sa;
-        struct sockaddr_un un;
-    } sa;
-    socklen_t sa_len;
-
-    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0)
-        err(EXIT_FAILURE, "couldn't create socket");
-
-    sa_len = init_socket(&sa.un, path);
-    if (bind(fd, &sa.sa, sa_len) < 0)
-        err(EXIT_FAILURE, "failed to bind");
-
-    if (sa.un.sun_path[0] != '@')
-        chmod(sa.un.sun_path, mode);
-
-    if (listen(fd, SOMAXCONN) < 0)
-        err(EXIT_FAILURE, "failed to listen");
-
-    return fd;
-}
-
 static void get_sockets(struct sock_info_t *s)
 {
     int fd, n;
