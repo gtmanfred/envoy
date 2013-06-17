@@ -40,10 +40,17 @@ struct agent_info_t {
     struct agent_info_t *next;
 };
 
+struct sock_info_t {
+    char* ssh_auth_sock, gpg_agent_info;
+    int server_sock, ssh_auth_fd, gpg_agent_fd;
+};
+
 static enum agent default_type = AGENT_SSH_AGENT;
 static struct agent_info_t *agents = NULL;
 static bool sd_activated = false;
-static int epoll_fd, server_sock;
+static int epoll_fd;
+
+static struct sock_info_t s;
 
 /* cgroup support */
 static bool (*pid_alive)(pid_t pid, uid_t uid);
@@ -53,8 +60,7 @@ static char *cgroup_name = NULL;
 static void cleanup(void)
 {
     if (!sd_activated) {
-        close(server_sock);
-        unlink_envoy_socket();
+        /* shutdown_socket(s.server_sock, NULL); */
     }
 
     if (kill_agent) {
@@ -302,39 +308,52 @@ static int run_agent(struct agent_data_t *data, uid_t uid, gid_t gid)
     return rc;
 }
 
-static int get_socket(void)
+static int create_socket(void)
 {
-    int fd, n;
+    int fd;
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    socklen_t sa_len;
 
-    n = sd_listen_fds(0);
-    if (n > 1)
-        err(EXIT_FAILURE, "too many file descriptors recieved");
-    else if (n == 1) {
-        fd = SD_LISTEN_FDS_START;
-        sd_activated = true;
-    } else {
-        union {
-            struct sockaddr sa;
-            struct sockaddr_un un;
-        } sa;
-        socklen_t sa_len;
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        err(EXIT_FAILURE, "couldn't create socket");
 
-        fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (fd < 0)
-            err(EXIT_FAILURE, "couldn't create socket");
+    const char *socket = env_envoy_socket();
+    sa_len = init_socket(&sa.un, socket);
+    if (bind(fd, &sa.sa, sa_len) < 0)
+        err(EXIT_FAILURE, "failed to bind");
 
-        sa_len = init_envoy_socket(&sa.un);
-        if (bind(fd, &sa.sa, sa_len) < 0)
-            err(EXIT_FAILURE, "failed to bind");
+    if (sa.un.sun_path[0] != '@')
+        chmod(sa.un.sun_path, 0777);
 
-        if (sa.un.sun_path[0] != '@')
-            chmod(sa.un.sun_path, 0777);
-
-        if (listen(fd, SOMAXCONN) < 0)
-            err(EXIT_FAILURE, "failed to listen");
-    }
+    if (listen(fd, SOMAXCONN) < 0)
+        err(EXIT_FAILURE, "failed to listen");
 
     return fd;
+}
+
+static void get_sockets(struct sock_info_t *s)
+{
+    int fd, n;
+    const char *path;
+
+    n = sd_listen_fds(0);
+    switch (n) {
+    case 0:
+        path = env_envoy_socket();
+        s->server_sock = create_socket();
+    case 1:
+    case 2:
+    case 3:
+        sd_activated = true;
+        fd = SD_LISTEN_FDS_START;
+        break;
+    default:
+        err(EXIT_FAILURE, "too many file descriptors recieved");
+    }
 }
 
 static struct agent_info_t *find_agent_info(struct agent_info_t *agents, uid_t uid)
@@ -373,7 +392,7 @@ static void accept_conn(void)
     static socklen_t cred_len = sizeof(struct ucred);
     uid_t server_uid = geteuid();
 
-    int cfd = accept4(server_sock, &sa.sa, &sa_len, SOCK_CLOEXEC);
+    int cfd = accept4(s.server_sock, &sa.sa, &sa_len, SOCK_CLOEXEC);
     if (cfd < 0)
         err(EXIT_FAILURE, "failed to accept connection");
 
@@ -442,11 +461,11 @@ static void handle_conn(int cfd)
 static int loop(void)
 {
     struct epoll_event events[4], event = {
-        .data.fd = server_sock,
+        .data.fd = s.server_sock,
         .events  = EPOLLIN | EPOLLET
     };
 
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_sock, &event) < 0)
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, s.server_sock, &event) < 0)
         err(EXIT_FAILURE, "failed to add socket to epoll");
 
     while (true) {
@@ -463,7 +482,7 @@ static int loop(void)
 
             if (evt->events & EPOLLERR || evt->events & EPOLLHUP)
                 close(evt->data.fd);
-            else if (evt->data.fd == server_sock)
+            else if (evt->data.fd == s.server_sock)
                 accept_conn();
             else
                 handle_conn(evt->data.fd);
@@ -521,7 +540,7 @@ int main(int argc, char *argv[])
     if (epoll_fd < 0)
         err(EXIT_FAILURE, "failed to start epoll");
 
-    server_sock = get_socket();
+    get_sockets(&s);
     init_cgroup();
 
     signal(SIGTERM, sighandler);

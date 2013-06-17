@@ -238,7 +238,8 @@ static bool get_agent(struct agent_data_t *data, enum agent id, bool start)
     if (fd < 0)
         err(EXIT_FAILURE, "couldn't create socket");
 
-    sa_len = init_envoy_socket(&sa.un);
+    const char *socket = env_envoy_socket();
+    sa_len = init_socket(&sa.un, socket);
     if (connect(fd, &sa.sa, sa_len) < 0)
         err(EXIT_FAILURE, "failed to connect to agent");
 

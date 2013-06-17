@@ -52,9 +52,13 @@ struct agent_data_t {
 };
 
 extern const struct agent_t Agent[LAST_AGENT];
+extern const char *envoy_sock;
 
-size_t init_envoy_socket(struct sockaddr_un *un);
-void unlink_envoy_socket(void);
+const char *env_lookup(const char *env, const char *def);
+const char *env_envoy_socket(void);
+
+size_t init_socket(struct sockaddr_un *un, const char *socket);
+void shutdown_socket(int socket, const char *path);
 enum agent find_agent(const char *string);
 
 #endif

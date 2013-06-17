@@ -33,15 +33,19 @@ const struct agent_t Agent[LAST_AGENT] = {
     }
 };
 
-static const char *get_socket_path(void)
+const char *env_lookup(const char *env, const char *def)
 {
-    const char *socket = getenv("ENVOY_SOCKET");
-    return socket ? socket : "@/vodik/envoy";
+    const char *value = getenv(env);
+    return value ? value : def;
 }
 
-size_t init_envoy_socket(struct sockaddr_un *un)
+const char *env_envoy_socket(void)
 {
-    const char *socket = get_socket_path();
+    return env_lookup("ENVOY_SOCKET", "@/vodik/envoy");
+}
+
+size_t init_socket(struct sockaddr_un *un, const char *socket)
+{
     off_t off = 0;
     size_t len;
 
@@ -56,12 +60,12 @@ size_t init_envoy_socket(struct sockaddr_un *un)
     return len + sizeof(un->sun_family);
 }
 
-void unlink_envoy_socket(void)
-{
-    const char *socket = get_socket_path();
-    if (socket[0] != '@')
-        unlink(socket);
-}
+/* void shutdown_socket(int socket, const char *socket) */
+/* { */
+/*     close(socket); */
+/*     if (path[0] != '@') */
+/*         unlink(path); */
+/* } */
 
 enum agent find_agent(const char *string)
 {
