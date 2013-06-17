@@ -89,6 +89,38 @@ int create_socket(const char *path, mode_t mode)
     return fd;
 }
 
+int connect_gpg_socket(const char *path)
+{
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    char *split;
+    size_t len;
+    socklen_t sa_len;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        warn("couldn't create socket");
+        return -1;
+    }
+
+    split = strchr(path, ':');
+    len = split - path;
+
+    sa.un = (struct sockaddr_un){ .sun_family = AF_UNIX };
+    memcpy(&sa.un.sun_path, path, len);
+
+    sa_len = len + sizeof(sa.un.sun_family);
+    if (connect(fd, &sa.sa, sa_len) < 0) {
+        warn("failed to connect to gpg-agent");
+        return -1;
+    }
+
+    return fd;
+}
+
+
 /* void shutdown_socket(int socket, const char *socket) */
 /* { */
 /*     close(socket); */

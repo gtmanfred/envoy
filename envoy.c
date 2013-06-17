@@ -125,33 +125,10 @@ static void gpg_send_messages(int fd)
 
 static int gpg_update_tty(const char *sock)
 {
-    char buf[BUFSIZ], *split;
-    union {
-        struct sockaddr sa;
-        struct sockaddr_un un;
-    } sa;
-    size_t len;
-    socklen_t sa_len;
+    char buf[BUFSIZ];
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0), nbytes;
-    if (fd < 0) {
-        warn("couldn't create socket");
-        return -1;
-    }
-
-    split = strchr(sock, ':');
-    len = split - sock;
-
-    sa.un = (struct sockaddr_un){ .sun_family = AF_UNIX };
-    memcpy(&sa.un.sun_path, sock, len);
-
-    sa_len = len + sizeof(sa.un.sun_family);
-    if (connect(fd, &sa.sa, sa_len) < 0) {
-        warn("failed to connect to gpg-agent");
-        return -1;
-    }
-
-    nbytes = read(fd, buf, BUFSIZ);
+    int fd = connect_gpg_socket(sock);
+    ssize_t nbytes = read(fd, buf, BUFSIZ);
     if (nbytes < 0)
         err(EXIT_FAILURE, "failed to read from gpg-agent socket");
 
