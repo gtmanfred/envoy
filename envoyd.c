@@ -34,6 +34,11 @@
 #include "lib/envoy.h"
 #include "clique/cgroups.h"
 
+struct sock_t {
+    int fd;
+    const char *path;
+};
+
 struct agent_info_t {
     uid_t uid;
     struct agent_data_t d;
@@ -43,8 +48,10 @@ struct agent_info_t {
 static enum agent default_type = AGENT_SSH_AGENT;
 static struct agent_info_t *agents = NULL;
 static bool sd_activated = false;
-static int epoll_fd, server_sock;
+static int epoll_fd;
 static char *gnupghome = NULL;
+
+static struct sock_t server, ssh_auth, gpg_info;
 
 /* cgroup support */
 static bool (*pid_alive)(pid_t pid, uid_t uid);
@@ -54,7 +61,7 @@ static char *cgroup_name = NULL;
 static void cleanup(void)
 {
     if (!sd_activated) {
-        close(server_sock);
+        close(server.fd);
         unlink_envoy_socket();
     }
 
@@ -347,39 +354,83 @@ static int run_agent(struct agent_data_t *data, uid_t uid, gid_t gid)
     return rc;
 }
 
-static int get_socket(void)
+static size_t init_socket(struct sockaddr_un *un, const char *socket)
 {
-    int fd, n;
+    off_t off = 0;
+    size_t len;
 
-    n = sd_listen_fds(0);
-    if (n > 1)
-        err(EXIT_FAILURE, "too many file descriptors recieved");
-    else if (n == 1) {
-        fd = SD_LISTEN_FDS_START;
-        sd_activated = true;
-    } else {
-        union {
-            struct sockaddr sa;
-            struct sockaddr_un un;
-        } sa;
-        socklen_t sa_len;
+    *un = (struct sockaddr_un){ .sun_family = AF_UNIX };
 
-        fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (fd < 0)
-            err(EXIT_FAILURE, "couldn't create socket");
+    if (socket[0] == '@')
+        off = 1;
 
-        sa_len = init_envoy_socket(&sa.un);
-        if (bind(fd, &sa.sa, sa_len) < 0)
-            err(EXIT_FAILURE, "failed to bind");
+    len = strlen(socket);
+    memcpy(&un->sun_path[off], &socket[off], len - off);
 
-        if (sa.un.sun_path[0] != '@')
-            chmod(sa.un.sun_path, 0777);
+    return len + sizeof(un->sun_family);
+}
 
-        if (listen(fd, SOMAXCONN) < 0)
-            err(EXIT_FAILURE, "failed to listen");
-    }
+static int create_socket(const char *path, mode_t mode)
+{
+    int fd;
+    union {
+        struct sockaddr sa;
+        struct sockaddr_un un;
+    } sa;
+    socklen_t sa_len;
+
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        err(EXIT_FAILURE, "couldn't create socket");
+
+    sa_len = init_socket(&sa.un, path);
+    if (bind(fd, &sa.sa, sa_len) < 0)
+        err(EXIT_FAILURE, "failed to bind");
+
+    if (sa.un.sun_path[0] != '@')
+        chmod(sa.un.sun_path, mode);
+
+    if (listen(fd, SOMAXCONN) < 0)
+        err(EXIT_FAILURE, "failed to listen");
 
     return fd;
+}
+
+const char *env_lookup(const char *env, const char *def)
+{
+    const char *value = getenv(env);
+    return value ? value : def;
+}
+
+const char *env_envoy_socket(void)
+{
+    return env_lookup("ENVOY_SOCKET", "@/vodik/envoy");
+}
+
+static void init_sockets(void)
+{
+    /* FIXME: don't hardcode */
+    mkdir("/run/envoy", 0777);
+
+    switch (sd_listen_fds(0)) {
+    case 0:
+        server.path = env_envoy_socket();
+        server.fd = create_socket(server.path, 0777);
+        /* fallthrough */
+    case 1:
+        ssh_auth.path = "/run/envoy/ssh";
+        ssh_auth.fd = create_socket(ssh_auth.path, 0555);
+        /* fallthrough */
+    case 2:
+        gpg_info.path = "/run/envoy/gpg";
+        gpg_info.fd = create_socket(gpg_info.path, 0555);
+        /* fallthrough */
+    case 3:
+        sd_activated = true;
+        break;
+    default:
+        err(EXIT_FAILURE, "too many file descriptors recieved");
+    }
 }
 
 static struct agent_info_t *lookup_agent_info(struct agent_info_t *agents, uid_t uid)
@@ -418,7 +469,7 @@ static void accept_conn(void)
     static socklen_t cred_len = sizeof(struct ucred);
     uid_t server_uid = geteuid();
 
-    int cfd = accept4(server_sock, &sa.sa, &sa_len, SOCK_CLOEXEC);
+    int cfd = accept4(server.fd, &sa.sa, &sa_len, SOCK_CLOEXEC);
     if (cfd < 0)
         err(EXIT_FAILURE, "failed to accept connection");
 
@@ -488,11 +539,11 @@ static void handle_conn(int cfd)
 static int loop(void)
 {
     struct epoll_event events[4], event = {
-        .data.fd = server_sock,
+        .data.fd = server.fd,
         .events  = EPOLLIN | EPOLLET
     };
 
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_sock, &event) < 0)
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server.fd, &event) < 0)
         err(EXIT_FAILURE, "failed to add socket to epoll");
 
     while (true) {
@@ -509,7 +560,7 @@ static int loop(void)
 
             if (evt->events & EPOLLERR || evt->events & EPOLLHUP)
                 close(evt->data.fd);
-            else if (evt->data.fd == server_sock)
+            else if (evt->data.fd == server.fd)
                 accept_conn();
             else
                 handle_conn(evt->data.fd);
@@ -561,18 +612,18 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Read $GNUPGHOME to pass to gpg-agent */
+    gnupghome = getenv("GNUPGHOME");
+
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0)
         err(EXIT_FAILURE, "failed to start epoll");
 
-    server_sock = get_socket();
+    init_sockets();
     init_cgroup();
 
     signal(SIGTERM, sighandler);
     signal(SIGINT,  sighandler);
-
-    /* Read $GNUPGHOME to pass to gpg-agent */
-    gnupghome = getenv("GNUPGHOME");
 
     return loop();
 }
