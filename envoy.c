@@ -40,25 +40,6 @@ enum action {
     ACTION_INVALID
 };
 
-static int get_agent(struct agent_data_t *data, enum agent id, bool start)
-{
-    int ret = envoy_agent(data, id, start);
-    if (ret < 0)
-        err(EXIT_FAILURE, "failed to fetch agent");
-
-    switch (data->status) {
-    case ENVOY_STOPPED:
-    case ENVOY_STARTED:
-    case ENVOY_RUNNING:
-        break;
-    case ENVOY_FAILED:
-        errx(EXIT_FAILURE, "agent failed to start, check envoyd's log");
-    case ENVOY_BADUSER:
-        errx(EXIT_FAILURE, "connection rejected, user is unauthorized to use this agent");
-    }
-
-    return ret;
-}
 
 static char *get_key_path(const char *home, const char *fragment)
 {

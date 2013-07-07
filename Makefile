@@ -1,12 +1,12 @@
 VERSION = $(shell git describe --tags)
 
 CFLAGS := -std=c99 \
-	-Wall -Wextra -pedantic \
+	-Wall -Wextra -Wno-format -pedantic \
 	-D_GNU_SOURCE \
 	-DENVOY_VERSION=\"${VERSION}\" \
 	${CFLAGS}
 
-LDLIBS = -lsystemd-daemon
+LDLIBS = -lsystemd-daemon -lgpgme
 
 all: envoyd envoy pam_envoy.so
 lib/envoy.o: lib/envoy.c
@@ -19,7 +19,7 @@ lib/envoy.o pam_envoy.o:
 	${CC} ${CFLAGS} -fPIC -o $@ -c $<
 
 pam_envoy.so:
-	${LD} -x --shared -o $@ $?
+	${LD} -x --shared -lgpgme -o $@ $?
 
 install: envoyd envoy pam_envoy.so
 	install -Dm755 envoyd ${DESTDIR}/usr/bin/envoyd
